@@ -7,14 +7,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
-
-# Config
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-
+# Config
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7795753797:AAF97ku5-weFRMISUMfAYI1YfxVx5wOz7u0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6631973071"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002782890597"))
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -466,6 +464,3 @@ async def save_edit(message: Message, state: FSMContext):
         logging.error(f"Tahrirlangan matnni yuborishda xato: user_id={user_id}, xato={e}")
         await message.answer("Matnni tahrirlashda xatolik yuz berdi.")
         
-# Run
-if __name__ == '__main__':
-    asyncio.run(dp.start_polling(bot))
