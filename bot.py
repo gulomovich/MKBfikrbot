@@ -1,242 +1,468 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, CallbackContext
-from telegram.error import TelegramError
+import asyncio
 import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.client.default import DefaultBotProperties
 
-# Logging sozlamalari
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Bot tokeni va kanal ID
-TOKEN = "7795753797:AAF97ku5-weFRMISUMfAYI1YfxVx5wOz7u0"
+# Config
+BOT_TOKEN = "7795753797:AAF97ku5-weFRMISUMfAYI1YfxVx5wOz7u0"
 ADMIN_ID = 6631973071
-CHANNEL_ID = -1002782890597  # Kanal ID'si -100 bilan boshlanishi kerak
+CHANNEL_ID = -1002782890597
 
-# Xabarni saqlash uchun vaqtinchalik ombor
-pending_messages = {}
+# Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Salom! Xabar yuboring (matn, rasm, fayl yoki video), u admin tomonidan ko'rib chiqiladi.")
+# Bot setup
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
 
-def handle_message(update: Update, context: CallbackContext) -> None:
-    user = update.message.from_user
-    chat_id = update.message.chat_id
-    message_id = update.message.message_id
+# States
+class Form(StatesGroup):
+    waiting = State()  
+    collecting = State()  
+    action = State()  
+    admin_edit = State()
 
-    # Xabarni admin uchun tayyorlash
-    message_data = {
-        'user_id': user.id,
-        'chat_id': chat_id,
-        'message_id': message_id,
-        'content': {}
+
+user_buffers = {}
+user_media_groups = {}  
+
+
+def get_main_menu():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📝 Yangi taklif")]],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_action_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Yuborish", callback_data="send"),
+         InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel")]
+    ])
+    return keyboard, "Ma'lumotlar qabul qilindi." 
+
+def get_admin_keyboard(user_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"approve:{user_id}"),
+         InlineKeyboardButton(text="✏️ Tahrirlash", callback_data=f"edit:{user_id}"),
+         InlineKeyboardButton(text="❌ Rad etish", callback_data=f"reject:{user_id}")]
+    ])
+
+# Yordamchi funksiya: Tugmalarni va bog'liq xabarni o'chirish
+async def remove_buttons(chat_id: int, state: FSMContext):
+    user_data = await state.get_data()
+    last_msg_id = user_data.get("last_message_id")
+    if last_msg_id:
+        try:
+            # Tugmalar bilan birga xabarni o'chirish
+            await bot.delete_message(chat_id=chat_id, message_id=last_msg_id)
+            logging.info(f"Xabar va tugmalar o'chirildi: chat_id={chat_id}, message_id={last_msg_id}")
+        except Exception as e:
+            logging.warning(f"Xabar va tugmalarni o'chirishda xato: chat_id={chat_id}, message_id={last_msg_id}, xato={e}")
+        finally:
+            await state.update_data(last_message_id=None)
+
+# Start
+@dp.message(CommandStart())
+async def start(message: Message, state: FSMContext):
+    await state.set_state(Form.waiting)
+    await message.answer("Botga xush kelibsiz! Yangi taklif yuborish uchun quyidagi tugmani bosing:", 
+                        reply_markup=get_main_menu())
+
+
+# Yangi taklif tugmasi
+@dp.message(Form.waiting, F.text == "📝 Yangi taklif")
+async def new_proposal(message: Message, state: FSMContext):
+    await state.set_state(Form.collecting)
+    user_buffers[message.from_user.id] = {"photos": [], "videos": [], "docs": [], "texts": [], "user_info": {}}
+    await state.update_data(last_message_id=None)
+    await message.answer("O'z taklifingizni rasm,vedio,file,matn to'rinishida yuboring.", 
+                        reply_markup=types.ReplyKeyboardRemove())
+
+
+# Handle content (Media Group yoki alohida kontent)
+@dp.message(Form.collecting, F.content_type.in_(['photo', 'video', 'document', 'text']) | F.media_group_id)
+async def handle_content(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    buf = user_buffers.get(user_id, {"photos": [], "videos": [], "docs": [], "texts": [], "user_info": {}})
+
+    # Foydalanuvchi ma'lumotlarini saqlash
+    buf['user_info'] = {
+        'full_name': message.from_user.full_name,
+        'username': message.from_user.username or 'Nomalum'
     }
 
-    # Xabar turini aniqlash
-    if update.message.text:
-        message_data['content']['text'] = update.message.text
-    if update.message.photo:
-        message_data['content']['photo'] = update.message.photo[-1].file_id
-        message_data['content']['caption'] = update.message.caption or ""
-    if update.message.document:
-        message_data['content']['document'] = update.message.document.file_id
-        message_data['content']['caption'] = update.message.caption or ""
-    if update.message.video:
-        message_data['content']['video'] = update.message.video.file_id
-        message_data['content']['caption'] = update.message.caption or ""
+    try:
+        # Media guruhni aniqlash
+        media_group_id = message.media_group_id
+        if media_group_id:
+            # Media guruh xabarni qayta ishlash
+            if user_id not in user_media_groups:
+                user_media_groups[user_id] = {}
+            if media_group_id not in user_media_groups[user_id]:
+                user_media_groups[user_id][media_group_id] = []
+            user_media_groups[user_id][media_group_id].append(message.message_id)
 
-    # Xabarni pending_messages ga saqlash
-    pending_messages[message_id] = message_data
+            # Media guruhda dokumentlar qabul qilinmaydi
+            if message.document:
+                await message.answer("Media guruhida fayllar qo'llab-quvvatlanmaydi. Iltimos, fayllarni alohida yuboring.")
+                return
+            if message.photo:
+                buf['photos'].append(message.photo[-1].file_id)
+            elif message.video:
+                buf['videos'].append(message.video.file_id)
 
-    # Admin uchun tugmalar
-    keyboard = [
-        [
-            InlineKeyboardButton("Tasdiqlash ✅", callback_data=f"approve_{message_id}"),
-            InlineKeyboardButton("Rad etish ❌", callback_data=f"reject_{message_id}"),
-            InlineKeyboardButton("Tahrirlash ✏️", callback_data=f"edit_{message_id}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+            user_buffers[user_id] = buf
 
-    # Xabarni adminga yuborish
-    admin_message = f"Yangi xabar foydalanuvchidan: {user.first_name} (ID: {user.id})\n"
-    if 'text' in message_data['content']:
-        admin_message += f"Matn: {message_data['content']['text']}\n"
-    if 'photo' in message_data['content']:
-        context.bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=message_data['content']['photo'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
-        )
-    elif 'document' in message_data['content']:
-        context.bot.send_document(
-            chat_id=ADMIN_ID,
-            document=message_data['content']['document'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
-        )
-    elif 'video' in message_data['content']:
-        context.bot.send_video(
-            chat_id=ADMIN_ID,
-            video=message_data['content']['video'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
-        )
-    else:
-        context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_message,
-            reply_markup=reply_markup
-        )
-
-    update.message.reply_text("Xabaringiz adminga yuborildi. Tasdiqlanishini kuting.")
-
-def button_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    query.answer()
-
-    action, message_id = query.data.split('_')
-    message_id = int(message_id)
-
-    if message_id not in pending_messages:
-        query.message.reply_text("Xabar topilmadi yoki allaqachon qayta ishlangan.")
-        return
-
-    message_data = pending_messages[message_id]
-
-    if action == "approve":
-        try:
-            # Xabarni kanalga yuborish
-            if 'photo' in message_data['content']:
-                context.bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=message_data['content']['photo'],
-                    caption=message_data['content']['caption']
+            # Media guruhning oxirgi xabari ekanligini tekshirish uchun qisqa kutish
+            await asyncio.sleep(0.5)  # 0.5 sekund kutish, guruh xabarlari to'liq kelishi uchun
+            current_group_messages = user_media_groups.get(user_id, {}).get(media_group_id, [])
+            if message.message_id == max(current_group_messages):  # Eng katta message_id oxirgi xabar deb hisoblanadi
+                await state.set_state(Form.action)
+                await remove_buttons(message.chat.id, state)
+                keyboard, text = get_action_keyboard()  # Tugmalar va xabar
+                msg = await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=text,
+                    reply_markup=keyboard
                 )
-            elif 'document' in message_data['content']:
-                context.bot.send_document(
-                    chat_id=CHANNEL_ID,
-                    document=message_data['content']['document'],
-                    caption=message_data['content']['caption']
-                )
-            elif 'video' in message_data['content']:
-                context.bot.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=message_data['content']['video'],
-                    caption=message_data['content']['caption']
-                )
-            elif 'text' in message_data['content']:
-                context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=message_data['content']['text']
-                )
+                await state.update_data(last_message_id=msg.message_id)
+                logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+                # Media guruhni tozalash
+                user_media_groups[user_id].pop(media_group_id, None)
+        else:
+            # Alohida kontentni qayta ishlash (dokumentlar ruxsat etiladi)
+            if message.photo:
+                buf['photos'].append(message.photo[-1].file_id)
+            elif message.video:
+                buf['videos'].append(message.video.file_id)
+            elif message.document:
+                buf['docs'].append(message.document.file_id)
+            elif message.text:
+                buf['texts'].append(message.html_text)
 
-            # Foydalanuvchiga xabar
-            context.bot.send_message(
-                chat_id=message_data['chat_id'],
-                text="Xabaringiz tasdiqlandi va kanalga joylandi!"
+            user_buffers[user_id] = buf
+            await state.set_state(Form.action)
+            await remove_buttons(message.chat.id, state)
+            keyboard, text = get_action_keyboard()  # Tugmalar va xabar
+            msg = await bot.send_message(
+                chat_id=message.chat.id,
+                text=text,
+                reply_markup=keyboard
             )
-            query.message.reply_text("Xabar tasdiqlandi va kanalga yuborildi.")
-        except TelegramError as e:
-            query.message.reply_text(f"Xatolik yuz berdi: {e}")
+            await state.update_data(last_message_id=msg.message_id)
+            logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+    except Exception as e:
+        logging.error(f"Ma'lumotni qayta ishlashda xato: user_id={user_id}, xato={e}")
+        await message.answer("Ma'lumotni qabul qilishda xato yuz berdi. Iltimos, qayta urinib ko'ring.")
 
-        # Xabarni o'chirish
-        del pending_messages[message_id]
+# Yana ma'lumot qo'shish uchun collecting holatiga qaytish
+@dp.message(Form.action, F.content_type.in_(['photo', 'video', 'document', 'text']) | F.media_group_id)
+async def continue_collecting(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    buf = user_buffers.get(user_id, {"photos": [], "videos": [], "docs": [], "texts": [], "user_info": {}})
 
-    elif action == "reject":
-        context.bot.send_message(
-            chat_id=message_data['chat_id'],
-            text="Xabaringiz rad etildi."
-        )
-        query.message.reply_text("Xabar rad etildi.")
-        del pending_messages[message_id]
+    # Foydalanuvchi ma'lumotlarini saqlash
+    buf['user_info'] = {
+        'full_name': message.from_user.full_name,
+        'username': message.from_user.username or 'Nomalum'
+    }
 
-    elif action == "edit":
-        query.message.reply_text("Iltimos, tahrirlangan xabar matnini yuboring.")
-        context.user_data['editing_message_id'] = message_id
+    await remove_buttons(message.chat.id, state)
 
-def handle_edit(update: Update, context: CallbackContext) -> None:
-    if 'editing_message_id' not in context.user_data:
+    try:
+        # Media guruhni aniqlash
+        media_group_id = message.media_group_id
+        if media_group_id:
+            # Media guruh xabarni qayta ishlash
+            if user_id not in user_media_groups:
+                user_media_groups[user_id] = {}
+            if media_group_id not in user_media_groups[user_id]:
+                user_media_groups[user_id][media_group_id] = []
+            user_media_groups[user_id][media_group_id].append(message.message_id)
+
+            # Media guruhda dokumentlar qabul qilinmaydi
+            if message.document:
+                await message.answer("Media guruhida fayllar qo'llab-quvvatlanmaydi. Iltimos, fayllarni alohida yuboring.")
+                return
+            if message.photo:
+                buf['photos'].append(message.photo[-1].file_id)
+            elif message.video:
+                buf['videos'].append(message.video.file_id)
+
+            user_buffers[user_id] = buf
+
+            # Media guruhning oxirgi xabari ekanligini tekshirish uchun qisqa kutish
+            await asyncio.sleep(0.5)  # 0.5 sekund kutish, guruh xabarlari to'liq kelishi uchun
+            current_group_messages = user_media_groups.get(user_id, {}).get(media_group_id, [])
+            if message.message_id == max(current_group_messages):  # Eng katta message_id oxirgi xabar deb hisoblanadi
+                await state.set_state(Form.action)
+                keyboard, text = get_action_keyboard()  # Tugmalar va xabar
+                msg = await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=text,
+                    reply_markup=keyboard
+                )
+                await state.update_data(last_message_id=msg.message_id)
+                logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+                # Media guruhni tozalash
+                user_media_groups[user_id].pop(media_group_id, None)
+        else:
+            # Alohida kontentni qayta ishlash (dokumentlar ruxsat etiladi)
+            if message.photo:
+                buf['photos'].append(message.photo[-1].file_id)
+            elif message.video:
+                buf['videos'].append(message.video.file_id)
+            elif message.document:
+                buf['docs'].append(message.document.file_id)
+            elif message.text:
+                buf['texts'].append(message.html_text)
+
+            user_buffers[user_id] = buf
+            await state.set_state(Form.action)
+            keyboard, text = get_action_keyboard()  # Tugmalar va xabar
+            msg = await bot.send_message(
+                chat_id=message.chat.id,
+                text=text,
+                reply_markup=keyboard
+            )
+            await state.update_data(last_message_id=msg.message_id)
+            logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+    except Exception as e:
+        logging.error(f"Ma'lumotni qayta ishlashda xato: user_id={user_id}, xato={e}")
+        await message.answer("Ma'lumotni qabul qilishda xato yuz berdi. Iltimos, qayta urinib ko'ring.")
+
+# Form.action holatida boshqa matn kiritilganda
+@dp.message(Form.action, F.text)
+async def handle_action_text(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    buf = user_buffers.get(user_id, {"photos": [], "videos": [], "docs": [], "texts": [], "user_info": {}})
+    buf['texts'].append(message.html_text)
+    user_buffers[user_id] = buf
+    await remove_buttons(message.chat.id, state)
+    await state.set_state(Form.action)
+    keyboard, text = get_action_keyboard()
+    msg = await bot.send_message(
+        chat_id=message.chat.id,
+        text=text,
+        reply_markup=keyboard
+    )
+    await state.update_data(last_message_id=msg.message_id)
+    logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+     
+# Yuborish
+@dp.callback_query(Form.action, F.data == "send")
+async def send(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    buf = user_buffers.get(user_id)
+    if not buf or not buf.get("texts"):
+        keyboard, text = get_action_keyboard()
+        await callback.message.answer("Iltimos, kamida bitta matn kiriting.", reply_markup=keyboard)
+        await callback.answer()
         return
 
-    message_id = context.user_data['editing_message_id']
-    if message_id not in pending_messages:
-        update.message.reply_text("Xabar topilmadi.")
+    try:
+        # Oldingi tugmalarni va xabarni o'chirish
+        await remove_buttons(callback.message.chat.id, state)
+
+        # Matnlarni yangi qatordan birlashtirish
+        combined_text = "\n".join(buf['texts'])
+
+        # Media guruhini tayyorlash
+        media = []
+        for p in buf['photos']:
+            media.append(types.InputMediaPhoto(media=p))
+        for v in buf['videos']:
+            media.append(types.InputMediaVideo(media=v))
+        for d in buf['docs']:
+            media.append(types.InputMediaDocument(media=d))
+
+        # Admin uchun ma'lumotlarni yuborish
+        admin_message_ids = []
+        if media:
+            media[0].caption = combined_text
+            sent_messages = await bot.send_media_group(chat_id=ADMIN_ID, media=media)
+            admin_message_ids.extend([msg.message_id for msg in sent_messages])
+        else:
+            sent_message = await bot.send_message(chat_id=ADMIN_ID, text=combined_text)
+            admin_message_ids.append(sent_message.message_id)
+
+        # Admin boshqaruv xabari
+        user_info = buf.get('user_info', {})
+        full_name = user_info.get('full_name', 'Nomalum')
+        username = user_info.get('username', 'Nomalum')
+        control_msg = await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"👤 <b>{full_name}</b> (@{username})",
+            reply_markup=get_admin_keyboard(user_id)
+        )
+        admin_message_ids.append(control_msg.message_id)
+
+        # Ma'lumotlarni saqlash
+        buf['admin_message_ids'] = admin_message_ids
+        user_buffers[user_id] = buf
+
+        await callback.message.answer("Takfilingiz adminga yuborildi", reply_markup=get_main_menu())
+        await state.set_state(Form.waiting)
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Takfilni adminga yuborishda xato: user_id={user_id}, xato={e}")
+        keyboard, text = get_action_keyboard()
+        await callback.message.answer("Takfilni yuborishda xatolik yuz berdi. Qayta urinib ko'ring.", 
+                                    reply_markup=keyboard)
+        await callback.answer()
+
+# Bekor qilish
+@dp.callback_query(Form.action, F.data == "cancel")
+async def cancel(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    await remove_buttons(callback.message.chat.id, state)
+    user_buffers.pop(user_id, None)
+    if user_id in user_media_groups:
+        user_media_groups.pop(user_id, None)
+    await state.set_state(Form.waiting)
+    await callback.message.answer("Takfil bekor qilindi. Yangi taklif yuborish uchun quyidagi tugmani bosing:", 
+                                reply_markup=get_main_menu())
+    await callback.answer()
+
+# Form.action holatida boshqa matn kiritilganda
+@dp.message(Form.action, F.text)
+async def handle_action_text(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    buf = user_buffers.get(user_id, {"photos": [], "videos": [], "docs": [], "text": None})
+    buf['text'] = message.html_text
+    user_buffers[user_id] = buf
+    await remove_buttons(message.chat.id, state)
+    await state.set_state(Form.action)
+    keyboard, text = get_action_keyboard()
+    msg = await bot.send_message(
+        chat_id=message.chat.id,
+        text=text,
+        reply_markup=keyboard
+    )
+    await state.update_data(last_message_id=msg.message_id)
+    logging.info(f"Action tugmalari yuborildi: chat_id={message.chat.id}, message_id={msg.message_id}")
+
+# Approve
+@dp.callback_query(F.data.startswith("approve:"))
+async def approve(callback: types.CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    buf = user_buffers.get(user_id)
+    if not buf:
+        await callback.answer("Takfil ma'lumotlari topilmadi.", show_alert=True)
         return
 
-    message_data = pending_messages[message_id]
-    new_text = update.message.text
+    try:
+        # Matnlarni yangi qatordan birlashtirish
+        combined_text = "\n".join(buf['texts'])
 
-    # Tahrirlangan matnni yangilash
-    message_data['content']['text'] = new_text
-    if 'caption' in message_data['content']:
-        message_data['content']['caption'] = new_text
+        media = []
+        for p in buf['photos']:
+            media.append(types.InputMediaPhoto(media=p))
+        for v in buf['videos']:
+            media.append(types.InputMediaVideo(media=v))
+        for d in buf['docs']:
+            media.append(types.InputMediaDocument(media=d))
 
-    # Admin uchun yangilangan xabarni qayta yuborish
-    keyboard = [
-        [
-            InlineKeyboardButton("Tasdiqlash ✅", callback_data=f"approve_{message_id}"),
-            InlineKeyboardButton("Rad etish ❌", callback_data=f"reject_{message_id}"),
-            InlineKeyboardButton("Tahrirlash ✏️", callback_data=f"edit_{message_id}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        if media:
+            media[0].caption = combined_text
+            await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+        else:
+            await bot.send_message(chat_id=CHANNEL_ID, text=combined_text)
 
-    admin_message = f"Tahrirlangan xabar foydalanuvchidan (ID: {message_data['user_id']}):\n"
-    if 'text' in message_data['content']:
-        admin_message += f"Matn: {message_data['content']['text']}\n"
+        await callback.message.edit_text("Takfil tasdiqlandi va kanalga joylandi.")
+        user_buffers.pop(user_id, None)
+        if user_id in user_media_groups:
+            user_media_groups.pop(user_id, None)
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Takfilni kanalga joylashda xato: user_id={user_id}, xato={e}")
+        await callback.message.answer("Takfilni kanalga joylashda xatolik yuz berdi.")
+        await callback.answer()
 
-    if 'photo' in message_data['content']:
-        context.bot.send_photo(
+# Reject
+@dp.callback_query(F.data.startswith("reject:"))
+async def reject(callback: types.CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    if user_id in user_buffers:
+        user_buffers.pop(user_id, None)
+        if user_id in user_media_groups:
+            user_media_groups.pop(user_id, None)
+    await callback.message.edit_text("Takfil rad etildi.")
+    await callback.answer()
+
+# Edit
+@dp.callback_query(F.data.startswith("edit:"))
+async def edit(callback: types.CallbackQuery, state: FSMContext):
+    user_id = int(callback.data.split(":")[1])
+    if user_id not in user_buffers:
+        await callback.answer("Taklif ma'lumotlari topilmadi.", show_alert=True)
+        return
+
+    await state.set_state(Form.admin_edit)
+    await state.update_data(edit_user_id=user_id, edit_msg_id=callback.message.message_id)
+    combined_text = "\n".join(user_buffers[user_id]['texts']) if user_buffers[user_id]['texts'] else "Matn mavjud emas"
+    await callback.message.answer(f"Joriy matn:\n{combined_text}\n\nYangi matnni kiriting:")
+    await callback.answer()
+
+@dp.message(Form.admin_edit)
+async def save_edit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data.get("edit_user_id")
+    msg_id = data.get("edit_msg_id")
+
+    if not user_id or user_id not in user_buffers:
+        await message.answer("Taklif topilmadi.")
+        await state.clear()
+        return
+
+    user_buffers[user_id]['texts'] = [message.html_text]  # Yangi matn ro'yxatni almashtiradi
+    try:
+        # Yangi xabarni yuborish
+        media = []
+        for p in user_buffers[user_id]['photos']:
+            media.append(types.InputMediaPhoto(media=p))
+        for v in user_buffers[user_id]['videos']:
+            media.append(types.InputMediaVideo(media=v))
+        for d in user_buffers[user_id]['docs']:
+            media.append(types.InputMediaDocument(media=d))
+
+        admin_message_ids = user_buffers[user_id].get('admin_message_ids', [])
+        # Yangi xabarni yuborish, avvalgi xabarlar saqlanadi
+        combined_text = "\n".join(user_buffers[user_id]['texts'])
+        if media:
+            media[0].caption = combined_text
+            sent_messages = await bot.send_media_group(chat_id=ADMIN_ID, media=media)
+            admin_message_ids.extend([msg.message_id for msg in sent_messages])
+        else:
+            sent_message = await bot.send_message(chat_id=ADMIN_ID, text=combined_text)
+            admin_message_ids.append(sent_message.message_id)
+
+        # Asl foydalanuvchi ma'lumotlarini olish
+        user_info = user_buffers[user_id].get('user_info', {})
+        full_name = user_info.get('full_name', 'Nomalum')
+        username = user_info.get('username', 'Nomalum')
+
+        # Admin boshqaruv xabari
+        control_msg = await bot.send_message(
             chat_id=ADMIN_ID,
-            photo=message_data['content']['photo'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
+            text=f"👤 <b>{full_name}</b> (@{username})",
+            reply_markup=get_admin_keyboard(user_id)
         )
-    elif 'document' in message_data['content']:
-        context.bot.send_document(
-            chat_id=ADMIN_ID,
-            document=message_data['content']['document'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
-        )
-    elif 'video' in message_data['content']:
-        context.bot.send_video(
-            chat_id=ADMIN_ID,
-            video=message_data['content']['video'],
-            caption=admin_message + f"Caption: {message_data['content']['caption']}",
-            reply_markup=reply_markup
-        )
-    else:
-        context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_message,
-            reply_markup=reply_markup
-        )
+        admin_message_ids.append(control_msg.message_id)
 
-    update.message.reply_text("Xabar tahrirlandi va qayta adminga yuborildi.")
-    del context.user_data['editing_message_id']
-
-def main() -> None:
-    # Updater obyektini yaratish
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    # Buyruqlar
-    dp.add_handler(CommandHandler("start", start))
-
-    # Xabarlar (matn, rasm, fayl, video)
-    dp.add_handler(MessageHandler(Filters.text | Filters.photo | Filters.document | Filters.video, handle_message))
-
-    # Tugma bosish
-    dp.add_handler(CallbackQueryHandler(button_callback))
-
-    # Tahrirlangan xabar
-    dp.add_handler(MessageHandler(Filters.text & Filters.chat(ADMIN_ID), handle_edit))
-
-    # Botni ishga tushirish
-    updater.start_polling()
-    updater.idle()
-
+        user_buffers[user_id]['admin_message_ids'] = admin_message_ids
+        await message.answer("Matn tahrirlandi.")
+        await state.clear()
+    except Exception as e:
+        logging.error(f"Tahrirlangan matnni yuborishda xato: user_id={user_id}, xato={e}")
+        await message.answer("Matnni tahrirlashda xatolik yuz berdi.")
+        
+# Run
 if __name__ == '__main__':
-    main()
+    asyncio.run(dp.start_polling(bot))
