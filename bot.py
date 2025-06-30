@@ -9,9 +9,12 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, R
 from aiogram.client.default import DefaultBotProperties
 
 # Config
-BOT_TOKEN = "7795753797:AAF97ku5-weFRMISUMfAYI1YfxVx5wOz7u0"
-ADMIN_ID = 6631973071
-CHANNEL_ID = -1002782890597
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
