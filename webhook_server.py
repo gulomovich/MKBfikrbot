@@ -16,8 +16,6 @@ app = Flask(__name__)
 # Config
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL","https://mkbtaklifbot.onrender.com/")
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 5000))
 
 # Webhook yo'li
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -44,4 +42,4 @@ async def set_webhook():
 if __name__ == "__main__":
     # Botni webhook rejimida ishga tushirish
     asyncio.run(set_webhook())
-    app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)
+    app.run(host='0.0.0.0', port=5000)
