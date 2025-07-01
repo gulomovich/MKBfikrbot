@@ -6,6 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from main import dp, bot
 import os
+import time
 
 # Logging sozlamalari
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -48,25 +49,39 @@ def root_post():
     logging.warning(f"Received POST request at /: data={request.get_json(silent=True)}")
     return Response("POST requests should be sent to /webhook", status=405)
 
-# Webhook o'rnatish
+# Webhook o'rnatish with retries
 async def set_webhook():
-    try:
-        if not WEBHOOK_URL:
-            logging.error("WEBHOOK_URL is not set in environment variables")
-            raise ValueError("WEBHOOK_URL is not set")
-        if not os.getenv("BOT_TOKEN"):
-            logging.error("BOT_TOKEN is not set in environment variables")
-            raise ValueError("BOT_TOKEN is not set")
-        webhook_info = await bot.get_webhook_info()
-        logging.info(f"Current webhook info: {webhook_info}")
-        if webhook_info.url != WEBHOOK_URL:
-            await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True, allowed_updates=["message", "callback_query"])
-            logging.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
-        else:
-            logging.info(f"Webhook already set to: {WEBHOOK_URL}")
-    except Exception as e:
-        logging.error(f"Webhook o'rnatishda xato: {e}")
-        raise
+    max_retries = 3
+    retry_delay = 5  # seconds
+    for attempt in range(max_retries):
+        try:
+            if not WEBHOOK_URL:
+                logging.error("WEBHOOK_URL is not set in environment variables")
+                raise ValueError("WEBHOOK_URL is not set")
+            if not os.getenv("BOT_TOKEN"):
+                logging.error("BOT_TOKEN is not set in environment variables")
+                raise ValueError("BOT_TOKEN is not set")
+            webhook_info = await bot.get_webhook_info()
+            logging.info(f"Current webhook info: {webhook_info}")
+            if webhook_info.url != WEBHOOK_URL:
+                await bot.set_webhook(
+                    WEBHOOK_URL,
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "callback_query"]
+                )
+                logging.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
+                return
+            else:
+                logging.info(f"Webhook already set to: {WEBHOOK_URL}")
+                return
+        except Exception as e:
+            logging.error(f"Webhook o'rnatishda xato (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                logging.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logging.error("Max retries reached. Webhook setup failed.")
+                raise
 
 # Gunicorn ishga tushganda webhook o'rnatish
 if __name__ == "__main__":
