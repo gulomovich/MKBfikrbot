@@ -13,8 +13,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 app = FastAPI()
 
 # Bot va Dispatcher sozlamalari
-bot = Bot(token=os.getenv("BOT_TOKEN", "7795753797:AAF97ku5-weFRMISUMfAYI1YfxVx5wOz7u0"), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=os.getenv("BOT_TOKEN"), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+# main.py dan handlerlarni import qilish
+from main import dp  # Sizning handlerlaringiz main.py da
+
+# Root marshruti (brauzerda sinash uchun)
+@app.get("/")
+async def root():
+    return {"message": "Telegram bot is running!"}
 
 # Webhook yo'li
 @app.post("/webhook")
@@ -31,15 +39,12 @@ async def webhook(request: Request):
 # Ilova ishga tushganda webhookni o'rnatish
 @app.on_event("startup")
 async def on_startup():
-    webhook_url = os.getenv("WEBHOOK_URL","https://mkbtaklifbot.onrender.com/webhook")
+    webhook_url = os.getenv("WEBHOOK_URL")
     try:
         await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
         logging.info(f"Webhook o'rnatildi: {webhook_url}")
     except Exception as e:
         logging.error(f"Webhook o'rnatishda xato: {e}")
-
-# main.py dan handlerlarni import qilish (agar kerak bo'lsa)
-from main import dp  # Agar handlerlar main.py da bo'lsa
 
 if __name__ == "__main__":
     import uvicorn
