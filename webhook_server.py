@@ -1,30 +1,20 @@
-from fastapi import FastAPI, Request
-from aiogram import Bot, Dispatcher
-from aiogram.types import Update
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 import os
 import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from aiogram.types import Update
+from main import bot, dp  # main.py da bot va dp mavjud bo'lishi kerak
 
-# Logging sozlamalari
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Log
+logging.basicConfig(level=logging.INFO)
 
-# FastAPI ilovasi
+# FastAPI
 app = FastAPI()
 
-# Bot va Dispatcher sozlamalari
-bot = Bot(token=os.getenv("BOT_TOKEN"), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-
-# main.py dan handlerlarni import qilish
-from main import dp  # Sizning handlerlaringiz main.py da
-
-# Root marshruti (brauzerda sinash uchun)
 @app.get("/")
 async def root():
-    return {"message": "Telegram bot is running!"}
+    return {"message": "Bot is working"}
 
-# Webhook yo'li
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
@@ -33,19 +23,22 @@ async def webhook(request: Request):
         await dp.process_update(update_obj)
         return {"status": "ok"}
     except Exception as e:
-        logging.error(f"Webhook xatosi: {e}, Update: {update}")
-        return {"status": "error"}, 500
+        logging.error(f"Webhook xatosi: {e}, update: {update}")
+        return JSONResponse(content={"status": "error"}, status_code=500)
 
-# Ilova ishga tushganda webhookni o'rnatish
 @app.on_event("startup")
 async def on_startup():
     webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        logging.error("❌ WEBHOOK_URL is not set!")
+        return
     try:
         await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-        logging.info(f"Webhook o'rnatildi: {webhook_url}")
+        logging.info(f"✅ Webhook o‘rnatildi: {webhook_url}")
     except Exception as e:
-        logging.error(f"Webhook o'rnatishda xato: {e}")
+        logging.error(f"❌ Webhook o‘rnatishda xato: {e}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
