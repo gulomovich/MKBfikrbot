@@ -2,7 +2,7 @@
 import asyncio
 from bot import bot
 
-WEBHOOK_URL = "https://your-app-name.onrender.com/"  # Render domainingizni yozing
+WEBHOOK_URL = "https://mkbtaklifbot.onrender.com/"  # Render domainingizni yozing
 
 async def main():
     await bot.set_webhook(WEBHOOK_URL)
