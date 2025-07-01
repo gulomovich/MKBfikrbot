@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 # Config
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://mkbtaklifbot.onrender.com/webhook")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 5000))  # Default to 5000 for Render
 
@@ -42,13 +42,23 @@ def health_check():
     logging.info(f"Health check requested: method={request.method}")
     return Response(status=200)
 
+# Handle POST to / for debugging
+@app.route("/", methods=["POST"])
+def root_post():
+    logging.warning(f"Received POST request at /: data={request.get_json(silent=True)}")
+    return Response("POST requests should be sent to /webhook", status=405)
+
 # Webhook o'rnatish
 async def set_webhook():
     try:
         if not WEBHOOK_URL:
             logging.error("WEBHOOK_URL is not set in environment variables")
-            return
+            raise ValueError("WEBHOOK_URL is not set")
+        if not os.getenv("BOT_TOKEN"):
+            logging.error("BOT_TOKEN is not set in environment variables")
+            raise ValueError("BOT_TOKEN is not set")
         webhook_info = await bot.get_webhook_info()
+        logging.info(f"Current webhook info: {webhook_info}")
         if webhook_info.url != WEBHOOK_URL:
             await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True, allowed_updates=["message", "callback_query"])
             logging.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
@@ -56,6 +66,7 @@ async def set_webhook():
             logging.info(f"Webhook already set to: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"Webhook o'rnatishda xato: {e}")
+        raise
 
 # Gunicorn ishga tushganda webhook o'rnatish
 if __name__ == "__main__":
@@ -63,7 +74,6 @@ if __name__ == "__main__":
     loop.run_until_complete(set_webhook())
     app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)
 else:
-    # Gunicorn orqali ishlaganda webhook o'rnatish
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(set_webhook())
