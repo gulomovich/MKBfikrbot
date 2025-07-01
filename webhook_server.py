@@ -2,50 +2,60 @@ from flask import Flask, request, Response
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from main import dp, bot  # Bu yerda bot va dp faqat yaratilgan bo'lishi kerak
+from aiogram.types import Update
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 import os
+from main import dp, bot  # main.py dan Dispatcher va Bot import qilinadi
 
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Logging sozlamalari
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Flask app
+# Flask ilovasi
 app = Flask(__name__)
 
 # Config
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://mkbtaklifbot.onrender.com/webhook")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL","https://mkbtaklifbot.onrender.com/webhook")
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 5000))
 
-# Webhook route (SYNC!)
+# Webhook yo'li
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     update = request.get_json()
     if update:
         try:
-            asyncio.create_task(dp.feed_raw_update(bot=bot, update=update))
-            logging.info("✅ Webhook update received and scheduled")
+            # JSON'dan Update obyektini yaratish
+            update_obj = Update(**update)
+            # Asinxron vazifani sinxron kontekstda ishga tushirish
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(dp.process_update(update_obj))
+            else:
+                asyncio.run_coroutine_threadsafe(dp.process_update(update_obj), loop)
             return Response(status=200)
         except Exception as e:
-            logging.error(f"❌ Webhook error: {e}")
+            logging.error(f"Webhook xatosi: {e}, Update: {update}")
             return Response(status=500)
-    logging.warning("⚠️ No valid update received")
     return Response(status=400)
 
-# Health check (for Render)
-@app.route("/", methods=["GET", "HEAD"])
-def index():
-    return "Bot is running", 200
-
-# Webhook o‘rnatish
+# Webhookni o'rnatish
 async def set_webhook():
     try:
-        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-        logging.info(f"✅ Webhook o'rnatildi: {WEBHOOK_URL}")
+        await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+        logging.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
     except Exception as e:
-        logging.error(f"❌ Webhook o'rnatishda xato: {e}")
+        logging.error(f"Webhook o'rnatishda xato: {e}")
+
+# Flask serverini alohida thread'da ishga tushirish
+def run_flask():
+    from threading import Thread
+    Thread(target=app.run, kwargs={'host': WEBAPP_HOST, 'port': WEBAPP_PORT}).start()
 
 if __name__ == "__main__":
-    # Faqat lokalda test uchun
-    asyncio.run(set_webhook())
-    app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)
+    # Webhookni o'rnatish
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(set_webhook())
+    # Flask serverini ishga tushirish
+    run_flask()
